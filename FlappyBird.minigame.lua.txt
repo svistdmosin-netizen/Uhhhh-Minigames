@@ -1,0 +1,203 @@
+return {
+    function()
+        local CAS = game:GetService("ContextActionService")
+        local Players = game:GetService("Players")
+        local RunService = game:GetService("RunService")
+        local ROOT = "https://raw.githubusercontent.com/svistdmosin-netizen/Uhhhh-Minigames/main/"
+        local cache = "UhhhhhhReanim/Minigames/FlappyBird"
+        local runningCleanup
+
+        local function folder(path)
+            if not makefolder or not isfolder then return end
+            local built = ""
+            for part in path:gmatch("[^/]+") do
+                built = built == "" and part or built .. "/" .. part
+                if not isfolder(built) then makefolder(built) end
+            end
+        end
+
+        local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        local function decode64(text)
+            text = text:gsub("[^" .. alphabet .. "=]", "")
+            return (text:gsub(".", function(character)
+                if character == "=" then return "" end
+                local value = alphabet:find(character, 1, true) - 1
+                local bits = ""
+                for shift = 5, 0, -1 do
+                    bits ..= bit32.band(bit32.rshift(value, shift), 1) == 1 and "1" or "0"
+                end
+                return bits
+            end):gsub("........", function(byte)
+                local value = 0
+                for index = 1, 8 do
+                    if byte:sub(index, index) == "1" then value += 2 ^ (8 - index) end
+                end
+                return string.char(value)
+            end))
+        end
+
+        local function asset(name)
+            local path = cache .. "/" .. name
+            folder(cache)
+            if not isfile(path) then
+                local encoded = game:HttpGet(ROOT .. name .. ".b64", true)
+                writefile(path, decode64(encoded))
+            end
+            return (getcustomasset or getsynasset)(path)
+        end
+
+        local function sprite(parent, atlas, rect, z)
+            local image = Instance.new("ImageLabel")
+            image.BackgroundTransparency = 1
+            image.Image = atlas
+            image.ImageRectOffset = Vector2.new(rect[1], rect[2])
+            image.ImageRectSize = Vector2.new(rect[3], rect[4])
+            image.Size = UDim2.fromOffset(rect[3], rect[4])
+            image.ZIndex = z or 1
+            image.Parent = parent
+            return image
+        end
+
+        local module = {
+            ModuleType = "MINIGAME",
+            Name = "Flappy Bird",
+            Description = "Flap through the pipes!",
+        }
+
+        function module.Stop()
+            if runningCleanup then runningCleanup() end
+        end
+
+        function module.Start(host)
+            module.Stop()
+            local connections = {}
+            local action = "UhhhhhhFlappyBird"
+            local atlas = asset("atlas.png")
+            local wing = asset("sfx_wing.ogg")
+            local point = asset("sfx_point.ogg")
+            local hit = asset("sfx_hit.ogg")
+            local die = asset("sfx_die.ogg")
+            local swoosh = asset("sfx_swooshing.ogg")
+
+            local gameFrame = Instance.new("Frame")
+            gameFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            gameFrame.Position = UDim2.fromScale(0.5, 0.5)
+            gameFrame.Size = UDim2.fromOffset(288, 512)
+            gameFrame.BackgroundColor3 = Color3.fromRGB(78, 192, 202)
+            gameFrame.BorderSizePixel = 0
+            gameFrame.ClipsDescendants = true
+            gameFrame.Parent = host
+
+            local background = sprite(gameFrame, atlas, {0, 0, 288, 512}, 1)
+            background.Size = UDim2.fromScale(1, 1)
+            local pipes = {}
+            local land = sprite(gameFrame, atlas, {584, 0, 336, 112}, 6)
+            land.AnchorPoint = Vector2.new(0, 1)
+            land.Position = UDim2.fromScale(0, 1)
+
+            local birdFrames = {{0,970,48,48},{56,970,48,48},{112,970,48,48}}
+            local bird = sprite(gameFrame, atlas, birdFrames[1], 8)
+            bird.AnchorPoint = Vector2.new(0.5,0.5)
+            bird.Size = UDim2.fromOffset(34,34)
+            bird.Position = UDim2.fromOffset(96,240)
+
+            local ready = sprite(gameFrame, atlas, {584,116,196,62}, 10)
+            ready.AnchorPoint = Vector2.new(0.5,0.5)
+            ready.Position = UDim2.fromOffset(144,130)
+            local tutorial = sprite(gameFrame, atlas, {584,181,114,98}, 10)
+            tutorial.AnchorPoint = Vector2.new(0.5,0.5)
+            tutorial.Position = UDim2.fromOffset(144,245)
+
+            local score = Instance.new("TextLabel")
+            score.AnchorPoint = Vector2.new(0.5,0)
+            score.Position = UDim2.fromOffset(144,38)
+            score.Size = UDim2.fromOffset(120,50)
+            score.BackgroundTransparency = 1
+            score.Font = Enum.Font.Code
+            score.TextColor3 = Color3.new(1,1,1)
+            score.TextStrokeTransparency = 0
+            score.TextSize = 36
+            score.ZIndex = 12
+            score.Text = "0"
+            score.Parent = gameFrame
+
+            local sounds = {}
+            for name,id in {wing=wing,point=point,hit=hit,die=die,swoosh=swoosh} do
+                local s=Instance.new("Sound"); s.Name=name; s.SoundId=id; s.Volume=.7; s.Parent=gameFrame; sounds[name]=s
+            end
+
+            local state="ready"
+            local y=240
+            local velocity=0
+            local spawnTime=0
+            local points=0
+            local wingClock=0
+            local frameIndex=1
+            local humanoid=Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            local jumpEnabled=humanoid and humanoid:GetStateEnabled(Enum.HumanoidStateType.Jumping)
+            if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,false); humanoid.Jump=false end
+
+            local function clearPipes()
+                for _,p in pipes do p.up:Destroy(); p.down:Destroy() end
+                table.clear(pipes)
+            end
+            local function addPipe()
+                local gap=104
+                local center=math.random(145,345)
+                local down=sprite(gameFrame,atlas,{112,646,52,320},4)
+                down.AnchorPoint=Vector2.new(0,1); down.Position=UDim2.fromOffset(310,center-gap/2)
+                local up=sprite(gameFrame,atlas,{168,646,52,320},4)
+                up.Position=UDim2.fromOffset(310,center+gap/2)
+                table.insert(pipes,{x=310,top=center-gap/2,bottom=center+gap/2,down=down,up=up,scored=false})
+            end
+            local function gameOver()
+                if state=="dead" then return end
+                state="dead"; sounds.hit:Play(); task.delay(.15,function() if gameFrame.Parent then sounds.die:Play() end end)
+                local over=sprite(gameFrame,atlas,{783,116,204,54},15)
+                over.AnchorPoint=Vector2.new(.5,.5); over.Position=UDim2.fromOffset(144,170)
+                local panel=sprite(gameFrame,atlas,{0,516,238,126},14)
+                panel.AnchorPoint=Vector2.new(.5,.5); panel.Position=UDim2.fromOffset(144,275)
+                local retry=sprite(gameFrame,atlas,{702,234,116,70},16)
+                retry.AnchorPoint=Vector2.new(.5,.5); retry.Position=UDim2.fromOffset(144,385)
+                retry.Active=true
+                connections[#connections+1]=retry.InputBegan:Connect(function(i)
+                    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+                        over:Destroy();panel:Destroy();retry:Destroy();clearPipes();points=0;score.Text="0";y=240;velocity=0;state="ready";ready.Visible=true;tutorial.Visible=true
+                    end
+                end)
+            end
+            local function flap()
+                if state=="dead" then return end
+                if state=="ready" then state="play";ready.Visible=false;tutorial.Visible=false;addPipe() end
+                velocity=-310;sounds.wing:Play()
+            end
+            CAS:BindActionAtPriority(action,function(_,inputState)
+                if inputState==Enum.UserInputState.Begin then flap() end
+                return Enum.ContextActionResult.Sink
+            end,false,10000,Enum.KeyCode.Space,Enum.KeyCode.ButtonA)
+            connections[#connections+1]=gameFrame.InputBegan:Connect(function(i)
+                if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then flap() end
+            end)
+            connections[#connections+1]=RunService.RenderStepped:Connect(function(dt)
+                dt=math.min(dt,1/30); wingClock+=dt
+                if wingClock>.1 then wingClock=0;frameIndex=frameIndex%3+1;bird.ImageRectOffset=Vector2.new(birdFrames[frameIndex][1],birdFrames[frameIndex][2]) end
+                if state~="play" then return end
+                velocity+=900*dt;y+=velocity*dt;bird.Position=UDim2.fromOffset(96,y);bird.Rotation=math.clamp(velocity*.09,-25,90)
+                spawnTime+=dt;if spawnTime>1.55 then spawnTime=0;addPipe() end
+                for i=#pipes,1,-1 do local p=pipes[i];p.x-=125*dt;p.down.Position=UDim2.fromOffset(p.x,p.top);p.up.Position=UDim2.fromOffset(p.x,p.bottom)
+                    if not p.scored and p.x+52<96 then p.scored=true;points+=1;score.Text=tostring(points);sounds.point:Play() end
+                    if p.x+52<0 then p.down:Destroy();p.up:Destroy();table.remove(pipes,i)
+                    elseif 113>p.x and 79<p.x+52 and (y-14<p.top or y+14>p.bottom) then gameOver() end end
+                if y<0 or y>448 then gameOver() end
+            end)
+            runningCleanup=function()
+                CAS:UnbindAction(action)
+                if humanoid and humanoid.Parent and jumpEnabled~=nil then humanoid:SetStateEnabled(Enum.HumanoidStateType.Jumping,jumpEnabled) end
+                for _,c in connections do pcall(function() c:Disconnect() end) end
+                if gameFrame then gameFrame:Destroy() end
+                runningCleanup=nil
+            end
+        end
+        return module
+    end,
+}
